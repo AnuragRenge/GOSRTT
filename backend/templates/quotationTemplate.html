@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Quotation</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #ffffff; margin: 0; padding: 0; }
+    h1 { text-align: center; font-size: 26px; font-weight: bold; color: white; margin: 0; }
+    .header {
+      background: linear-gradient(135deg, #00d4ff, #0077ff);
+      padding: 20px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .header::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 70%;
+      background: rgba(255,255,255,0.25);
+      clip-path: polygon(0 0, 100% 0, 100% 50%, 0 100%);
+    }
+    .content { padding: 20px; }
+    .footer { background: #f8f8f8; padding: 12px; text-align: center; color: #777; font-size: 12px; }
+    .info { margin: 10px 0; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <h1>Sai Ram Tours & Travels - Quotation</h1>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <h2>Dear {{lead_name}},</h2>
+    <p class="info"><b>Tour ID:</b> {{id}}</p>
+    <p class="info"><b>Destination:</b> {{destination}}</p>
+    <p class="info"><b>Start Date:</b> {{start_date}}</p>
+    <p class="info"><b>End Date:</b> {{end_date}}</p>
+    <p class="info"><b>Driver:</b> {{assigned_driver}}</p>
+
+    <p style="margin-top: 20px; color: #333;">
+      Thank you for choosing our services 🌏. Please find your quotation above.  
+      For quick help, call us at <b>7755926255</b>.
+    </p>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    &copy; {{year}} Sai Ram Tours & Travels. All rights reserved.
+  </div>
+</body>
+</html>
