@@ -22,6 +22,7 @@ const authRoutes = require('./routes/auth');
 const companiesRouter = require('./routes/companies');
 
 const app = express();
+app.set('trust proxy', 1);
 
 /* =========================
    Security & Core Middleware
