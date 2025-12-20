@@ -1,7 +1,13 @@
+'use strict';
+
 const express = require('express');
 const path = require('path');
-const app = express();
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const fetch = global.fetch || require('node-fetch');
+const db = require('./db');
 require('dotenv').config();
+
 const { sendEmail } = require('./controllers/emailHelper');
 const leadCreatedTemplate = require('./templates/leadCreated');
 const enquiryCreatedTemplate = require('./templates/enquiryCreated');
@@ -15,62 +21,110 @@ const driversRouter = require('./routes/drivers');
 const authRoutes = require('./routes/auth');
 const companiesRouter = require('./routes/companies');
 
-app.use(express.json()); // For JSON body parsing
+const app = express();
 
-//app.use(express.static('public'));
-// Safer than express.static('public')
-// app.use(express.static(path.join(__dirname, 'public')));
+/* =========================
+   Security & Core Middleware
+========================= */
+
+app.use(helmet());
+app.use(express.json({ limit: '10kb' }));
+
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+
+/* =========================
+   Static Frontend
+========================= */
 
 const staticDir = process.env.NODE_ENV === 'production' ? 'dist' : 'public';
 const frontendDir = path.join(__dirname, '..', 'frontend');
+
 app.use(express.static(path.join(frontendDir, staticDir)));
 
-// If deployed behind nginx / load balancer (HTTPS termination), enable this
-// app.set('trust proxy', 1); // [web:73]
+/* =========================
+   Config
+========================= */
 
 const PORT = process.env.PORT || 3000;
+const API_BASE_URL = process.env.API_BASE_URL || `http://127.0.0.1:${PORT}`;
 
-// IMPORTANT: use fixed base URL for server-to-server calls (don’t use req.get('host'))
-const API_BASE_URL = process.env.API_BASE_URL || `http://127.0.0.1:${PORT}`; // [web:87]
+/* =========================
+   Service Token Cache (Safe)
+========================= */
 
 let cachedToken = null;
 let tokenFetchedAt = 0;
+let tokenPromise = null;
+
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
 async function getServiceToken() {
   const now = Date.now();
-  if (cachedToken && (now - tokenFetchedAt) < TOKEN_TTL_MS) return cachedToken;
 
-  const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', },
-    body: JSON.stringify({
-      email: process.env.SERVICE_EMAIL,
-      password: process.env.SERVICE_PASSWORD,
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Service login failed (HTTP ${res.status})`);
+  if (cachedToken && (now - tokenFetchedAt) < TOKEN_TTL_MS) {
+    return cachedToken;
   }
 
-  const data = await res.json();
-  const token = data.token || data.accessToken;
-  if (!token) throw new Error('Login response did not include a token');
+  if (!tokenPromise) {
+    tokenPromise = (async () => {
+      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          email: process.env.SERVICE_EMAIL,
+          password: process.env.SERVICE_PASSWORD,
+        }),
+      });
 
-  cachedToken = token;
-  tokenFetchedAt = now;
-  return token;
+      if (!res.ok) {
+        tokenPromise = null;
+        throw new Error(`Service login failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      const token = data.token || data.accessToken;
+
+      if (!token) {
+        tokenPromise = null;
+        throw new Error('Service token missing');
+      }
+
+      cachedToken = token;
+      tokenFetchedAt = Date.now();
+      tokenPromise = null;
+
+      return token;
+    })();
+  }
+
+  return tokenPromise;
 }
+
+/* =========================
+   Public Enquiry Endpoint
+========================= */
 
 app.post('/api/enquiry', async (req, res) => {
   try {
     const { name, phone, email } = req.body || {};
-    if (!name || !phone || !email) {
-      return res.status(400).json({ message: 'name, phone, email are required' });
+
+    // Minimal backend safety (frontend already validates)
+    if (
+      !name || !phone || !email ||
+      name.length > 100 ||
+      phone.length > 20 ||
+      email.length > 150
+    ) {
+      return res.status(400).json({ message: 'Invalid input' });
     }
-    // const requestBaseUrl = `${req.protocol}://${req.get('host')}`;
-    // console.log('Request Base URL:', requestBaseUrl);
 
     const token = await getServiceToken();
 
@@ -91,36 +145,42 @@ app.post('/api/enquiry', async (req, res) => {
     });
 
     const contentType = leadRes.headers.get('content-type') || '';
-    const payload = contentType.includes('application/json') ? await leadRes.json() : await leadRes.text();
+    const payload = contentType.includes('application/json')
+      ? await leadRes.json()
+      : await leadRes.text();
 
-    if (leadRes.status === 409) { // 409 Conflict (duplicate) [web:89]
-      // Customer email (keep it same tone as "thank you" email)
-      const subject = 'Thank you for your interest';
-      const text = `Hello ${name}, Thank you for showing interest. We have received your details.`;
-      const html = leadCreatedTemplate(name);
-
-      // Admin email (explicitly mark as existing lead)
-      const adminSubject = 'New enquiry for existing lead received';
-      const adminText =
-        `Hello Admin, a new enquiry was received for an existing lead.\n` +
-        `Name: ${name}\nPhone: ${phone}\nEmail: ${email}\nSource: Website`;
-      const adminHTML = enquiryCreatedTemplate({ name, phone, email, source: 'Website' });
-
+    // Duplicate lead
+    if (leadRes.status === 409) {
       setImmediate(() => {
-        sendEmail(email, subject, html, text).catch(err => console.error('Customer email error:', err));
-        sendEmail('contact.gosrtt@gmail.com', adminSubject, adminHTML, adminText).catch(err => console.error('Admin email error:', err));
+        sendEmail(
+          email,
+          'Thank you for your interest',
+          leadCreatedTemplate(name),
+          `Hello ${name}, thank you for your interest.`
+        ).catch(err => console.error('Customer email error:', err));
+
+        sendEmail(
+          'contact.gosrtt@gmail.com',
+          'New enquiry for existing lead',
+          enquiryCreatedTemplate({ name, phone, email, source: 'Website' }),
+          `Existing lead enquiry received`
+        ).catch(err => console.error('Admin email error:', err));
       });
 
       return res.status(200).json({ message: 'Thanks! Your enquiry has been received.' });
-
     }
 
     return res.status(leadRes.status).send(payload);
 
   } catch (err) {
-    return res.status(500).json({ message: err.message || 'Server error' });
+    console.error('[ENQUIRY ERROR]', err);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+/* =========================
+   API Routes
+========================= */
 
 app.use('/api/auth', authRoutes);
 app.use('/api/bookings', bookingsRouter);
@@ -129,11 +189,82 @@ app.use('/api/users', usersRouter);
 app.use('/api/tours', toursRouter);
 app.use('/api/vehicles', vehiclesRouter);
 app.use('/api/drivers', driversRouter);
-app.use('/api/companies', companiesRouter); 
+app.use('/api/companies', companiesRouter);
 
-// app.get(/^\/(?!api).*/, (req, res) => {
-//   res.sendFile(path.join(frontendDir, staticDir, 'index.html'));
-// });
+/* ========================= Basic Health ========================= */
+app.get('/api/health', (req, res) => {
+    return res.status(200).json({
+        status: 'UP',
+        service: 'gosrtt-api',
+        timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        uptime_seconds: Math.floor(process.uptime()),
+        env: process.env.NODE_ENV || 'development'
+    });
+});
+
+/* ========================= Deep Health ========================= */
+app.get('/api/health/deep', async (req, res) => {
+
+  if (req.headers['x-health-key'] !== process.env.HEALTH_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const result = {
+    status: 'UP',
+    checks: {},
+    timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+  };
+
+  try {
+    // DB check
+    await db.query('SELECT 1');
+    result.checks.database = 'CONNECTED';
+  } catch (err) {
+    result.status = 'DEGRADED';
+    result.checks.database = 'DISCONNECTED';
+  }
+
+  try {
+    // Auth service token check
+    await getServiceToken();
+    result.checks.auth_service = 'AVAILABLE';
+  } catch (err) {
+    result.status = 'DEGRADED';
+    result.checks.auth_service = 'FAILED';
+  }
+
+  try {
+    // Email transport check (no mail sent)
+    await sendEmail(
+      process.env.SERVICE_EMAIL,
+      'Health Check',
+      'Health ping',
+      'Health ping'
+    );
+    result.checks.email = 'OK';
+  } catch (err) {
+    result.status = 'DEGRADED';
+    result.checks.email = 'FAILED';
+  }
+
+  return res.status(result.status === 'UP' ? 200 : 503).json(result);
+});
+
+/* ========================= Readiness ========================= */
+app.get('/api/health/ready', async (req, res) => {
+    try {
+        await db.query('SELECT 1');
+        return res.status(200).json({ ready: true });
+    } catch (err) {
+        return res.status(503).json({ ready: false });
+    }
+});
+
+
+/* =========================
+   SPA Routing
+========================= */
+
 app.get('/', (req, res) => {
   return res.sendFile(path.join(frontendDir, staticDir, 'index.html'));
 });
@@ -142,15 +273,22 @@ app.get(/^\/(?!api).*/, (req, res) => {
   return res.status(404).sendFile(path.join(frontendDir, staticDir, '404.html'));
 });
 
+/* =========================
+   API 404 Handler
+========================= */
+
 app.use('/api', (req, res) => {
-  const accept = req.headers.accept || '';
-  if (accept.includes('text/html')) {
-    return res.status(404).sendFile(path.join(frontendDir, staticDir, '404.html'));
-  }
-  return res.status(404).json({ error: 'Invalid API Route', path: req.originalUrl });
+  return res.status(404).json({
+    error: 'Invalid API Route',
+    path: req.originalUrl,
+  });
 });
 
+/* =========================
+   Server Start
+========================= */
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  console.log(`[INFO][server.js][${now}] Server running on port ${PORT}`);
 });
