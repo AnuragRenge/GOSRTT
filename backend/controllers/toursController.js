@@ -3,35 +3,64 @@ const db = require('../db');
 
 // GET all tours
 exports.getTours = async (req, res) => {
+  Logger.api('Get tours requested', {
+    userId: req.user?.id,
+    ip: req.ip,
+    route: req.originalUrl,requestId: req.requestId
+  });
   try {
     const [rows] = await db.query(`SELECT t.id,t.name AS tour_name,l.name AS lead_name,
       t.type_of_tour AS tour_type,t.created_at,
       l.phone AS lead_phone,l.email AS lead_email FROM tours t
       LEFT JOIN leads l  on t.lead_id = l.id`);
-
+    Logger.info('Tours fetched successfully', {
+      count: rows.length,requestId: req.requestId
+    });
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Failed to fetch tours', {
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 // GET one tour by id 
 exports.getTourById = async (req, res) => {
+  Logger.api('Get tour by ID requested', {
+    tourId: req.params.id,
+    userId: req.user?.id,
+    ip: req.ip,requestId: req.requestId
+  });
   try {
     const [rows] = await db.query(`SELECT tours.*,l.name AS lead_name,
     l.phone AS lead_phone,l.email AS lead_email,v.assigned_driver_id as assigned_driver FROM tours 
     LEFT JOIN leads l on tours.lead_id = l.id
     LEFT JOIN vehicles v ON tours.vehicle_id = v.id      
     WHERE tours.id = ?`, [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ message: 'Tour not found' });
+    if (!rows.length) {
+      Logger.warn('Tour not found', { tourId,requestId: req.requestId });
+      return res.status(404).json({ message: 'Tour not found' });
+    }
+    Logger.info('Tour fetched successfully', { tourId,requestId: req.requestId });
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Failed to fetch tour by ID', {
+      tourId: req.params.id,
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 // POST new tour
 exports.createTour = async (req, res) => {
+  Logger.api('Create tour requested', {
+    userId: req.user?.id,
+    ip: req.ip,requestId: req.requestId
+  });
   // Allowed fields
   const allowedFields = [
     'company_id', 'lead_id', 'vehicle_id',
@@ -60,6 +89,10 @@ exports.createTour = async (req, res) => {
       );
       driverIdToSet = rows.length > 0 ? rows[0].assigned_driver_id : null;
     } catch (err) {
+      Logger.error('Error fetching assigned driver', {
+        error: err.message,
+        stack: err.stack,requestId: req.requestId
+      });
       return res.status(500).json({ error: 'Error fetching assigned driver: ' + err.message });
     }
     // Overwrite/update driver_id regardless of user input
@@ -86,6 +119,10 @@ exports.createTour = async (req, res) => {
       }
     }
   } catch (err) {
+    Logger.error('Error fetching company price', {
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
     return res.status(500).json({ error: 'Error fetching company price: ' + err.message });
   }
 
@@ -121,18 +158,32 @@ exports.createTour = async (req, res) => {
     const formattedName = `B NO -${String(insertedId).padStart(4, '0')}`;
 
     db.query('UPDATE bookings SET name = ? WHERE id = ?', [formattedName, insertedId]);
+    Logger.info('Tour created successfully', {
+      tourId: insertedId,
+      tourname: formattedName,
+      createdBy: req.user?.id,requestId: req.requestId
+    });
 
     res.status(201).json({ id: result.insertId });
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: err.message });
+    Logger.error('Create tour failed', {
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 
 // PUT update tour
 exports.updateTour = async (req, res) => {
-  console.log(req.body);
+  const tourId = req.params.id;
+
+  Logger.api('Update tour requested', {
+    tourId,
+    userId: req.user?.id,requestId: req.requestId
+  });
+
   const updatableFields = [
     'company_id', 'lead_id', 'vehicle_id', 'driver_id',
     'description', 'start_state', 'end_state', 'start_city', 'end_city',
@@ -151,6 +202,7 @@ exports.updateTour = async (req, res) => {
   });
 
   if (fields.length === 0) {
+    Logger.warn('No valid fields provided for tour update', { tourId,requestId: req.requestId });
     return res.status(400).json({ error: 'No valid fields provided for update' });
   }
 
@@ -163,6 +215,10 @@ exports.updateTour = async (req, res) => {
       );
       driverIdToSet = rows.length > 0 ? rows[0].assigned_driver_id : null;
     } catch (err) {
+      Logger.error('Error fetching assigned driver', {
+        error: err.message,
+        stack: err.stack,requestId: req.requestId
+      });
       return res.status(500).json({ error: 'Error fetching assigned driver: ' + err.message });
     }
     // Overwrite/update driver_id regardless of user input
@@ -199,6 +255,11 @@ exports.updateTour = async (req, res) => {
       if (rows.length === 0) return res.status(404).json({ error: 'Tour not found' });
       tourData = rows[0];
     } catch (err) {
+      Logger.error('Error fetching tour data for recalculation', {
+        tourId,
+        error: err.message,
+        stack: err.stack,requestId: req.requestId
+      });
       return res.status(500).json({ error: err.message });
     }
   }
@@ -220,7 +281,12 @@ exports.updateTour = async (req, res) => {
             [company_id]
           );
           newPrice = rows.length > 0 ? Number(rows[0].price) || 0 : 0;
+          Logger.info('Recalculated price for tour update', { tourId, newPrice,requestId: req.requestId });
         } catch (err) {
+          Logger.error('Error fetching company price', {
+            error: err.message,
+            stack: err.stack,requestId: req.requestId
+          });
           return res.status(500).json({ error: 'Error fetching company price: ' + err.message });
         }
       } else {
@@ -246,18 +312,43 @@ exports.updateTour = async (req, res) => {
   try {
     const sql = `UPDATE tours SET ${fields.join(', ')} WHERE id = ?`;
     await db.query(sql, values);
+    Logger.info('Tour updated successfully', {
+      tourId,
+      updatedBy: req.user?.id,
+      fieldCount: fields.length,requestId: req.requestId
+    });
     res.json({ message: 'Tour details updated successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Update tour failed', {
+      tourId,
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 // DELETE tour
 exports.deleteTour = async (req, res) => {
+  const tourId = req.params.id;
+  Logger.api('Delete tour requested', {
+    tourId,
+    userId: req.user?.id,
+    ip: req.ip,requestId: req.requestId
+  });
   try {
     await db.query('DELETE FROM tours WHERE id = ?', [req.params.id]);
+    Logger.info('Tour deleted successfully', {
+      tourId,
+      deletedBy: req.user?.id,requestId: req.requestId
+    });
     res.json({ message: 'Tour deleted' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Delete tour failed', {
+      tourId,
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

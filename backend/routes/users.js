@@ -1,25 +1,27 @@
 // routes/users.js
 const express = require('express');
 const router = express.Router();
+const authenticateToken = require('../middleware/auth');
 const usersController = require('../controllers/usersController');
+const Logger = require('../utils/logger');
 
-// GET all users
+router.use(authenticateToken);
+
+router.use((req, res, next) => {
+  Logger.api('User route accessed', {
+    method: req.method,
+    path: req.originalUrl,
+    userId: req.user?.id,
+    ip: req.ip,requestId: req.requestId
+  });
+  next();
+});
+
 router.get('/', usersController.getUsers);
-
-//GET all user by page
-
-router.get('/page/',usersController.getUserspage);
-
-// GET user by ID
+router.get('/page/', usersController.getUserspage);
 router.get('/:id', usersController.getUserById);
-
-// POST new user
 router.post('/', usersController.createUser);
-
-// PUT update user
 router.put('/:id', usersController.updateUser);
-
-// DELETE user
 router.delete('/:id', usersController.deleteUser);
 
 module.exports = router;

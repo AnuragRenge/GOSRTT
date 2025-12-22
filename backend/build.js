@@ -1,27 +1,50 @@
+'use strict';
+
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const JavaScriptObfuscator = require('javascript-obfuscator');
 const { minify: minifyHTML } = require('html-minifier-terser');
 const CleanCSS = require('clean-css');
+const Logger = require('./utils/logger');
 
 const publicDir = path.join(__dirname, '..', 'frontend', 'public');
 const distDir = path.join(__dirname, '..', 'frontend', 'dist');
 
-async function readText(filePath) {
-  try {
-    return await fsp.readFile(filePath, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  }
+/* =========================
+   Helpers
+========================= */
+
+async function ensureDir(dir) {
+  await fsp.mkdir(dir, { recursive: true });
 }
 
-(async () => {
-  await fsp.mkdir(distDir, { recursive: true });
+async function copyFileSafe(src, dest) {
+  await ensureDir(path.dirname(dest));
+  await fsp.copyFile(src, dest);
+}
 
-  // 1. Obfuscate JavaScript
-  const jsCode = await fsp.readFile(path.join(publicDir, 'script.js'), 'utf8');
+async function processHTML(file) {
+  const srcPath = path.join(publicDir, file);
+  const destPath = path.join(distDir, file);
+
+  const html = await fsp.readFile(srcPath, 'utf8');
+  const minified = await minifyHTML(html, {
+    collapseWhitespace: true,
+    removeComments: true,
+    minifyJS: true,
+    minifyCSS: true
+  });
+
+  await ensureDir(path.dirname(destPath));
+  await fsp.writeFile(destPath, minified);
+}
+
+async function processJS(file) {
+  const srcPath = path.join(publicDir, file);
+  const destPath = path.join(distDir, file);
+
+  const jsCode = await fsp.readFile(srcPath, 'utf8');
   const obfuscated = JavaScriptObfuscator.obfuscate(jsCode, {
     compact: true,
     controlFlowFlattening: true,
@@ -33,54 +56,82 @@ async function readText(filePath) {
     transformObjectKeys: true,
     rotateStringArray: true
   });
-  await fsp.writeFile(path.join(distDir, 'script.js'), obfuscated.getObfuscatedCode());
 
-  // 2. Minify CSS
-  const cssCode = await fsp.readFile(path.join(publicDir, 'styles.css'), 'utf8');
-  const minifiedCSS = new CleanCSS().minify(cssCode).styles;
-  await fsp.writeFile(path.join(distDir, 'styles.css'), minifiedCSS);
+  await ensureDir(path.dirname(destPath));
+  await fsp.writeFile(destPath, obfuscated.getObfuscatedCode());
+}
 
-  // 3. Minify HTML (index)
-  const htmlCode = await fsp.readFile(path.join(publicDir, 'index.html'), 'utf8');
-  const minIndex = await minifyHTML(htmlCode, {
-    collapseWhitespace: true,
-    removeComments: true,
-    minifyJS: true,
-    minifyCSS: true
-  });
-  await fsp.writeFile(path.join(distDir, 'index.html'), minIndex);
+async function processCSS(file) {
+  const srcPath = path.join(publicDir, file);
+  const destPath = path.join(distDir, file);
 
-  // 3b. Minify HTML (404) - optional
-  const notFoundPath = path.join(publicDir, '404.html');
-  const html404 = await readText(notFoundPath);
-  if (html404) {
-    const min404 = await minifyHTML(html404, {
-      collapseWhitespace: true,
-      removeComments: true,
-      minifyJS: true,
-      minifyCSS: true
-    });
-    await fsp.writeFile(path.join(distDir, '404.html'), min404);
-  } else {
-    console.log('ℹ️ 404.html not found; skipping.');
-  }
+  const css = await fsp.readFile(srcPath, 'utf8');
+  const minified = new CleanCSS().minify(css).styles;
 
-  // 4. Copy fonts and images
-  for (const folder of ['fonts', 'images']) {
-    const src = path.join(publicDir, folder);
-    const dest = path.join(distDir, folder);
+  await ensureDir(path.dirname(destPath));
+  await fsp.writeFile(destPath, minified);
+}
 
-    if (fs.existsSync(src)) {
-      await fsp.mkdir(dest, { recursive: true });
-      const files = await fsp.readdir(src);
-      for (const file of files) {
-        await fsp.copyFile(path.join(src, file), path.join(dest, file));
-      }
+/* =========================
+   Recursive Directory Walk
+========================= */
+
+async function walk(dir, base = '') {
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  let files = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relPath = path.join(base, entry.name);
+
+    if (entry.isDirectory()) {
+      files = files.concat(await walk(fullPath, relPath));
+    } else {
+      files.push(relPath);
     }
   }
 
-  console.log(`[DEBUG][build.js][${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}] Build complete! Files in dist/`);
+  return files;
+}
+
+/* =========================
+   Build Process
+========================= */
+
+(async () => {
+  await ensureDir(distDir);
+
+  const files = await walk(publicDir);
+
+  for (const file of files) {
+    const ext = path.extname(file);
+
+    try {
+      if (ext === '.html') {
+        await processHTML(file);
+      } else if (ext === '.js') {
+        await processJS(file);
+      } else if (ext === '.css') {
+        await processCSS(file);
+      } else {
+        // Images, fonts, favicon, etc.
+        await copyFileSafe(
+          path.join(publicDir, file),
+          path.join(distDir, file)
+        );
+      }
+    } catch (err) {
+      Logger.error('Build file failed', { file, error: err.message });
+      throw err;
+    }
+  }
+
+  Logger.build('Frontend build completed', {
+    outputDir: 'dist',
+    filesProcessed: files.length
+  });
+
 })().catch((err) => {
-  console.error(err);
+  Logger.error('Build process failed', { error: err.message });
   process.exit(1);
 });

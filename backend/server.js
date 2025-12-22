@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fetch = global.fetch || require('node-fetch');
 const db = require('./db');
+const Logger = require('./utils/logger');
 require('dotenv').config();
 
 const { sendEmail } = require('./controllers/emailHelper');
@@ -109,11 +110,15 @@ async function getServiceToken() {
   return tokenPromise;
 }
 
+const requestIdMiddleware = require('./middleware/requestId');
+app.use(requestIdMiddleware);
+
 /* =========================
    Public Enquiry Endpoint
 ========================= */
 
 app.post('/api/enquiry', async (req, res) => {
+  Logger.api('Public enquiry received', { ip: req.ip, body: req.body,requestId: req.requestId });
   try {
     const { name, phone, email } = req.body || {};
 
@@ -158,14 +163,14 @@ app.post('/api/enquiry', async (req, res) => {
           'Thank you for your interest',
           leadCreatedTemplate(name),
           `Hello ${name}, thank you for your interest.`
-        ).catch(err => console.error('Customer email error:', err));
+        ).catch(err => Logger.error('Customer enquiry email error:', { error: err, requestId: req.requestId }));
 
         sendEmail(
           'contact.gosrtt@gmail.com',
           'New enquiry for existing lead',
           enquiryCreatedTemplate({ name, phone, email, source: 'Website' }),
           `Existing lead enquiry received`
-        ).catch(err => console.error('Admin email error:', err));
+        ).catch(err => Logger.error('Admin enquiry email error:', { error: err, requestId: req.requestId }));
       });
 
       return res.status(200).json({ message: 'Thanks! Your enquiry has been received.' });
@@ -174,7 +179,7 @@ app.post('/api/enquiry', async (req, res) => {
     return res.status(leadRes.status).send(payload);
 
   } catch (err) {
-    console.error('[ENQUIRY ERROR]', err);
+    Logger.error('Enquiry submission failed', { error: err, requestId: req.requestId });
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -194,13 +199,13 @@ app.use('/api/companies', companiesRouter);
 
 /* ========================= Basic Health ========================= */
 app.get('/api/health', (req, res) => {
-    return res.status(200).json({
-        status: 'UP',
-        service: 'gosrtt-api',
-        timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-        uptime_seconds: Math.floor(process.uptime()),
-        env: process.env.NODE_ENV || 'development'
-    });
+  return res.status(200).json({
+    status: 'UP',
+    service: 'gosrtt-api',
+    timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    uptime_seconds: Math.floor(process.uptime()),
+    env: process.env.NODE_ENV || 'development'
+  });
 });
 
 /* ========================= Deep Health ========================= */
@@ -209,7 +214,7 @@ app.get('/api/health/deep', async (req, res) => {
   if (req.headers['x-health-key'] !== process.env.HEALTH_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  
+
   const result = {
     status: 'UP',
     checks: {},
@@ -235,7 +240,6 @@ app.get('/api/health/deep', async (req, res) => {
   }
 
   try {
-    // Email transport check (no mail sent)
     await sendEmail(
       process.env.SERVICE_EMAIL,
       'Health Check',
@@ -253,12 +257,12 @@ app.get('/api/health/deep', async (req, res) => {
 
 /* ========================= Readiness ========================= */
 app.get('/api/health/ready', async (req, res) => {
-    try {
-        await db.query('SELECT 1');
-        return res.status(200).json({ ready: true });
-    } catch (err) {
-        return res.status(503).json({ ready: false });
-    }
+  try {
+    await db.query('SELECT 1');
+    return res.status(200).json({ ready: true });
+  } catch (err) {
+    return res.status(503).json({ ready: false });
+  }
 });
 
 
@@ -267,10 +271,12 @@ app.get('/api/health/ready', async (req, res) => {
 ========================= */
 
 app.get('/', (req, res) => {
+  Logger.info('Serving SPA INDEX', { ip: req.ip, path: req.path, requestId: req.requestId });
   return res.sendFile(path.join(frontendDir, staticDir, 'index.html'));
 });
 
 app.get(/^\/(?!api).*/, (req, res) => {
+  Logger.info('Serving SPA route', { path: req.path, ip: req.ip, requestId: req.requestId });
   return res.status(404).sendFile(path.join(frontendDir, staticDir, '404.html'));
 });
 
@@ -279,6 +285,7 @@ app.get(/^\/(?!api).*/, (req, res) => {
 ========================= */
 
 app.use('/api', (req, res) => {
+  Logger.warn('API 404 - Route not found', { path: req.originalUrl, ip: req.ip,requestId: req.requestId });
   return res.status(404).json({
     error: 'Invalid API Route',
     path: req.originalUrl,
@@ -290,6 +297,8 @@ app.use('/api', (req, res) => {
 ========================= */
 
 app.listen(PORT, () => {
-  const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-  console.log(`[INFO][server.js][${now}] Server running on port ${PORT}`);
+  Logger.info('Server started successfully', {
+    port: process.env.PORT,
+    env: process.env.NODE_ENV
+  });
 });

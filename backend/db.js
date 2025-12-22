@@ -1,7 +1,8 @@
 const mysql = require('mysql2');
 require('dotenv').config();
+const Logger = require('./utils/logger');
 
-console.log("Connecting to DB:", {
+Logger.info('Current Database Info', {
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   user: process.env.DB_USER,

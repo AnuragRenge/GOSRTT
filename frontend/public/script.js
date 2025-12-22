@@ -63,7 +63,7 @@ form.addEventListener("submit", async (e) => {
     setStatus("Please enter a valid email address.", "error");
     emailEl.focus();
     return;
-  } 
+  }
   submitBtn.disabled = true;
   submitBtn.textContent = "Submitting...";
 

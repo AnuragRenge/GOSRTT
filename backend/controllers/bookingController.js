@@ -1,40 +1,77 @@
 // controllers/bookingController.js
 const db = require('../db');
 const Decimal = require('decimal.js');
+const Logger = require('../utils/logger');
 
-// GET all bookings
+/* =========================================================
+   GET ALL BOOKINGS
+========================================================= */
 exports.getBookings = async (req, res) => {
+  Logger.api('Get bookings requested', {
+    userId: req.user?.id,
+    ip: req.ip,
+    route: req.originalUrl,requestId: req.requestId
+  });
+
   try {
     const [rows] = await db.query(`SELECT b.id, b.name, b.type_of_tour AS tour_type, b.created_at,
        b.status, l.name AS lead_name, t.name AS tour_name 
       FROM bookings b
       LEFT JOIN leads l ON b.lead_id = l.id 
       LEFT JOIN tours t ON b.tour_id = t.id;`);
+    Logger.info('Bookings fetched successfully', {
+      count: rows.length,requestId: req.requestId
+    });
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Failed to fetch bookings', {
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
-// GET booking by ID
+/* =========================================================
+   GET BOOKING BY ID
+========================================================= */
 exports.getBookingById = async (req, res) => {
+  const bookingId = req.params.id;
+
+  Logger.api('Get booking by ID requested', {
+    bookingId,
+    userId: req.user?.id,requestId: req.requestId
+  });
+
   try {
     const [rows] = await db.query(`SELECT bookings.*,
       l.phone AS lead_phone,l.email AS lead_email,t.total_amount AS tour_total_amount
       FROM bookings 
       LEFT JOIN leads l ON bookings.lead_id = l.id
       LEFT JOIN tours t ON bookings.tour_id = t.id
-      WHERE bookings.id = ?`, [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ message: 'Booking not found' });
+      WHERE bookings.id = ?`, [bookingId]);
+    if (!rows.length) {
+      Logger.warn('Booking not found', { bookingId,requestId: req.requestId });
+      return res.status(404).json({ message: 'Booking not found' });
+    }
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    Logger.error('Failed to fetch booking', {
+      bookingId,
+      error: err.message,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
-// POST new booking
+/* =========================================================
+   CREATE BOOKING
+========================================================= */
 exports.createBooking = async (req, res) => {
-
+  Logger.api('Create booking requested', {
+    userId: req.user?.id,
+    ip: req.ip,requestId: req.requestId
+  });
   // Allowed fields
   const allowedFields = [
     'company_id', 'lead_id', 'vehicle_id', 'tour_id',
@@ -55,6 +92,7 @@ exports.createBooking = async (req, res) => {
   });
 
   if (fields.length === 0) {
+    Logger.warn('Create booking failed - no fields provided', { requestId: req.requestId });
     return res.status(400).json({ error: 'No Fields To Insert' });
   }
 
@@ -119,6 +157,7 @@ exports.createBooking = async (req, res) => {
     const profit = Decimal(amount).minus(
       Decimal(req.body.expenses || 0).plus(Decimal(req.body.toll_tax || 0))
     );
+    Logger.debug('Profit calculated', { bookingId: req.params.id, profit: profit.toNumber(),requestId: req.requestId });
     fields.push('profit');
     values.push(profit.toNumber());
   }
@@ -134,23 +173,39 @@ exports.createBooking = async (req, res) => {
     const insertedId = result.insertId;
     const formattedName = `B NO -${String(insertedId).padStart(4, '0')}`;
     await db.query('UPDATE bookings SET name = ? WHERE id = ?', [formattedName, insertedId]);
+    Logger.info('Booking created successfully', {
+      bookingId,
+      createdBy: req.user?.id,requestId: req.requestId
+    });
+
 
     res.status(201).json({ id: result.insertId });
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: err.message });
+    Logger.error('Create booking failed', {
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
-// PUT update booking
+/* =========================================================
+   UPDATE BOOKING
+========================================================= */
 exports.updateBooking = async (req, res) => {
+  const bookingId = req.params.id;
+
+  Logger.api('Update booking requested', {
+    bookingId,
+    userId: req.user?.id,requestId: req.requestId
+  });
+
   try {
     if (!req.params.id) {
+      Logger.warn('Booking not found for update', { bookingId ,requestId: req.requestId});
       return res.status(400).json({ error: 'Booking ID is required' });
     }
-    //console.log('request Body:', req.body);
 
-    // ------- Fetch existing booking & company charges ------
     const [rows] = await db.query(
       `SELECT 
         b.id, b.actual_total_amount, b.booked_distance_km, b.type_of_tour,b.total_amount,
@@ -166,6 +221,7 @@ exports.updateBooking = async (req, res) => {
     );
 
     if (rows.length === 0) {
+      Logger.warn('Booking not found for update', { bookingId,requestId: req.requestId });
       return res.status(404).json({ error: 'Booking not found' });
     }
 
@@ -190,7 +246,11 @@ exports.updateBooking = async (req, res) => {
         );
         driverId = vehicleRows.length > 0 ? vehicleRows.assigned_driver_id : null;
       } catch (err) {
-        console.error('Error fetching assigned driver:', err);
+        Logger.error('Error fetching assigned driver on vehicle change', {
+          bookingId,
+          error: err.message,
+          stack: err.stack,requestId: req.requestId
+        });
         return res.status(500).json({ error: 'Error fetching driver details' });
       }
 
@@ -204,7 +264,7 @@ exports.updateBooking = async (req, res) => {
     }
 
     // Use current amount as base
-    let newActualTotal =null;
+    let newActualTotal = null;
 
     // ------- Condition 3: Recalculate actual_total_amount on distance change -------
     if ('actual_distance_km' in req.body) {
@@ -235,8 +295,8 @@ exports.updateBooking = async (req, res) => {
           values.push(updatedProfit.toNumber());
         }
 
-        console.log(`Recalculated updatedProfit: ${updatedProfit.toNumber()}`);
-        console.log(`Recalculated actual_total_amount: ${newActualTotal.toNumber()}`);
+        Logger.debug('Recalculated updatedProfit', { bookingId, updatedProfit: updatedProfit.toNumber() ,requestId: req.requestId});
+        Logger.debug('Recalculated total amount', { bookingId, newActualTotal: newActualTotal.toNumber(),requestId: req.requestId });
 
       } else {
         // Revert actual_total_amount to prior total_amount
@@ -250,7 +310,7 @@ exports.updateBooking = async (req, res) => {
           fields.push("profit = ?");
           values.push(revertedProfit.toNumber());
         }
-        
+
         fields.push("actual_total_amount = ?");
         values.push(newActualTotal.toNumber());
 
@@ -259,14 +319,14 @@ exports.updateBooking = async (req, res) => {
         fields.push("outstanding_amount = ?");
         values.push(outstandingAmount.toNumber());
 
-        console.log(`Reverted updatedProfit: ${revertedProfit.toNumber()}`);
-        console.log(`Reverted actual_total_amount: ${newActualTotal.toNumber()}`);
+        Logger.debug('Reverted updatedProfit', { bookingId, updatedProfit: revertedProfit.toNumber() ,requestId: req.requestId});
+        Logger.debug('Reverted actual_total_amount', { bookingId, newActualTotal: newActualTotal.toNumber(),requestId: req.requestId });
       }
 
       fields.push("actual_distance_km = ?");
       values.push(newDist.toNumber());
 
-    }else{
+    } else {
       newActualTotal = new Decimal(prior.actual_total_amount || 0);
     }
 
@@ -274,10 +334,10 @@ exports.updateBooking = async (req, res) => {
     let newPaid = null;
     let newOutstanding = null;
     if ('amount_paid' in req.body) {
-        newPaid = new Decimal(req.body.amount_paid);
-        newOutstanding = newActualTotal.minus(newPaid);
-        fields.push("amount_paid = ?", "outstanding_amount = ?");
-        values.push(newPaid.toNumber(), newOutstanding.toNumber());
+      newPaid = new Decimal(req.body.amount_paid);
+      newOutstanding = newActualTotal.minus(newPaid);
+      fields.push("amount_paid = ?", "outstanding_amount = ?");
+      values.push(newPaid.toNumber(), newOutstanding.toNumber());
     }
 
     // ------- Condition 5: expenses / toll_tax -> recalc profit -------
@@ -320,6 +380,7 @@ exports.updateBooking = async (req, res) => {
 
     // ------- Final SQL update -------
     if (fields.length === 0) {
+      Logger.warn('No valid fields provided for booking update', { bookingId ,requestId: req.requestId});
       return res.status(400).json({ error: 'No valid fields provided for update' });
     }
 
@@ -327,6 +388,8 @@ exports.updateBooking = async (req, res) => {
     const sql = `UPDATE bookings SET ${fields.join(', ')} WHERE id = ?`;
 
     await db.query(sql, values);
+
+    Logger.debug('Booking updated with fields', { bookingId, fieldCount: fields.length ,requestId: req.requestId});
 
     if ('status' in req.body) {
       const newBookingStatus = req.body.status;
@@ -349,9 +412,16 @@ exports.updateBooking = async (req, res) => {
         try {
           const [vehicleRows] = await db.query('SELECT assigned_driver_id FROM vehicles WHERE id = ?', [vehicleIdToUpdate]);
           driverIdToUpdate = vehicleRows.length > 0 ? vehicleRows[0].assigned_driver_id : null;
+          Logger.debug('Fetched assigned driver for updated vehicle', {
+            bookingId,
+            vehicleId: vehicleIdToUpdate,
+            driverId: driverIdToUpdate,requestId: req.requestId
+          });
         } catch (err) {
-          console.error('Error fetching assigned driver for status update:', err);
-          // Not blocking booking update, just logging
+          Logger.error('Error fetching assigned driver for status update', {
+            bookingId,
+            error: err.message, stack: err.stack,requestId: req.requestId
+          });
         }
       } else {
         driverIdToUpdate = prior.vehicle_assigned_driver_id || prior.driver_id;
@@ -371,30 +441,63 @@ exports.updateBooking = async (req, res) => {
       try {
         if (vehicleIdToUpdate && vehicleStatus) {
           await db.query('UPDATE vehicles SET available_status = ? WHERE id = ?', [vehicleStatus, vehicleIdToUpdate]);
-          console.log(`Updated vehicle ${vehicleIdToUpdate} status to ${vehicleStatus}`);
+          Logger.debug('Updated vehicle status due to booking status change', {
+            bookingId,
+            vehicleId: vehicleIdToUpdate,
+            newStatus: vehicleStatus,requestId: req.requestId
+          });
         }
         if (driverIdToUpdate && driverStatus) {
           await db.query('UPDATE drivers SET status = ? WHERE id = ?', [driverStatus, driverIdToUpdate]);
-          console.log(`Updated driver ${driverIdToUpdate} status to ${driverStatus}`);
+          Logger.debug('Updated driver status due to booking status change', {
+            bookingId,
+            driverId: driverIdToUpdate,
+            newStatus: driverStatus,requestId: req.requestId
+          });
         }
       } catch (err) {
-        console.error('Error updating vehicle or driver status:', err);
-        // Not blocking booking update success, just log error
+        Logger.error('Error updating vehicle or driver status', {
+          bookingId,
+          error: err.message,
+          stack: err.stack,requestId: req.requestId
+        });
       }
     }
+    Logger.info('Booking details updated successfully', {
+      bookingId,
+      updatedBy: req.user?.id,requestId: req.requestId
+    });
     res.json({ message: 'Booking details updated successfully' });
 
   } catch (err) {
+    Logger.error('Update booking failed', {
+      bookingId,
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
     res.status(500).json({ error: err.message });
   }
 };
 
 // DELETE booking
 exports.deleteBooking = async (req, res) => {
+  Logger.api('Delete booking requested', {
+    bookingId: req.params.id,
+    userId: req.user?.id
+  });
   try {
     await db.query('DELETE FROM bookings WHERE id = ?', [req.params.id]);
+    Logger.info('Booking deleted successfully', {
+      bookingId: req.params.id,
+      deletedBy: req.user?.id,requestId: req.requestId
+    });
     res.json({ message: 'Booking deleted' });
   } catch (err) {
+    Logger.error('Delete booking failed', {
+      bookingId: req.params.id,
+      error: err.message,
+      stack: err.stack,requestId: req.requestId
+    });
     res.status(500).json({ error: err.message });
   }
 };

@@ -1,4 +1,5 @@
 const transporter = require('../middleware/emailConfig');
+const Logger = require('../utils/logger');
 
 /**
  * Send email using preconfigured transporter
@@ -13,7 +14,12 @@ const transporter = require('../middleware/emailConfig');
  *   { filename: 'file.pdf', path: 'https://example.com/file.pdf' }
  */
 
-async function sendEmail(to, subject, html, text,attachments) {
+async function sendEmail(to, subject, html, text, attachments) {
+  Logger.api('Send email requested', {
+    toCount: Array.isArray(to) ? to.length : 1,
+    subject,
+    attachmentCount: attachments?.length || 0
+  });
   try {
     const mailOptions = {
       from: `"Sai Ram Tours & Travels" <Do-not-reply@gosrtt.com>`,
@@ -22,7 +28,7 @@ async function sendEmail(to, subject, html, text,attachments) {
       text,
       html,
       replyTo: 'contact.gosrtt@gmail.com',
-      
+
     };
 
     // Handle attachments if provided
@@ -52,10 +58,17 @@ async function sendEmail(to, subject, html, text,attachments) {
     }
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('[DEBUG] Email sent:', info.response);
+    Logger.info('Email sent successfully', {
+      messageId: info.messageId,
+      acceptedCount: info.accepted?.length || 0,
+      rejectedCount: info.rejected?.length || 0
+    });
     return info;
   } catch (error) {
-    console.error('Error sending email:', error);
+    Logger.error('Email sending failed', {
+      error: error.message,
+      code: error.code
+    });
     throw error;
   }
 }
