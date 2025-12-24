@@ -33,7 +33,7 @@ app.use(helmet());
 app.use(express.json({ limit: '10kb' }));
 
 app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 2 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,

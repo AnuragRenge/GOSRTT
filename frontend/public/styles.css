@@ -8,10 +8,10 @@
 }
 
 :root {
-  --topbar-h: 60px;
+  --topbar-h: 70px;
   --footer-h: 44px;
 
-  --glass: rgba(15, 23, 42, 0.55);
+  --glass: rgba(15, 23, 42, 0.80);
   --card: rgba(255, 255, 255, 0.96);
   --text: #0b1220;
   --muted: #5b6475;
@@ -292,8 +292,10 @@ input:focus {
   /* Header */
   .topbar {
     padding: 0 10px;
-    justify-content: center;
-    text-align: center;
+    /* justify-content: center;
+    text-align: center; */
+    justify-content: flex-start;
+    text-align: left;
   }
 
   .brand {
@@ -349,6 +351,28 @@ input:focus {
     height: 44px;
   }
 
+  .topbar img {
+    height: 42px;
+  }
+  
+  .topbar .brand span {
+    font-size: clamp(20px, 3.5vw, 18px);
+  }
+
+}
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.topbar img {
+  height: 60px;
+  width: auto;
+  object-fit: contain;
+  margin-top: 10px;
 }
 
 .password-wrap {
