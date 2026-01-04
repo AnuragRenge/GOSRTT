@@ -53,6 +53,7 @@ exports.getCompanies = async (req, res) => {
    GET COMPANY BY ID
 ========================================================= */
 exports.getCompanyById = async (req, res) => {
+  companyId = req.params.id;
   Logger.api('Get company by ID requested', {
     companyId,
     userId: req.user?.id,requestId: req.requestId
@@ -157,6 +158,7 @@ exports.updateCompany = async (req, res) => {
    DELETE COMPANY
 ========================================================= */
 exports.deleteCompany = async (req, res) => {
+  companyId = req.params.id;
   Logger.api('Delete company requested', {
     companyId,
     userId: req.user?.id,requestId: req.requestId

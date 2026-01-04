@@ -28,6 +28,7 @@ exports.getTours = async (req, res) => {
 
 // GET one tour by id 
 exports.getTourById = async (req, res) => {
+  tourId = req.params.id;
   Logger.api('Get tour by ID requested', {
     tourId: req.params.id,
     userId: req.user?.id,

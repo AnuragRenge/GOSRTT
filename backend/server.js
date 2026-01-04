@@ -45,6 +45,12 @@ app.use(rateLimit({
 
 const staticDir = process.env.NODE_ENV === 'production' ? 'dist' : 'public';
 const frontendDir = path.join(__dirname, '..', 'frontend');
+const portalDist = path.join(frontendDir, 'portal', 'dist')
+
+app.use('/portal', express.static(portalDist))
+app.get('/portal/*splat', (req, res) => {
+  res.sendFile(path.join(portalDist, 'index.html'))
+})
 
 app.use(express.static(path.join(frontendDir, staticDir)));
 
@@ -275,7 +281,7 @@ app.get('/', (req, res) => {
   return res.sendFile(path.join(frontendDir, staticDir, 'index.html'));
 });
 
-app.get(/^\/(?!api).*/, (req, res) => {
+app.get(/^\/(?!api|portal).*/, (req, res) => {
   Logger.info('Serving SPA route', { path: req.path, ip: req.ip, requestId: req.requestId });
   return res.status(404).sendFile(path.join(frontendDir, staticDir, '404.html'));
 });
