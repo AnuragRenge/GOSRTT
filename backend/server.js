@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const fetch = global.fetch || require('node-fetch');
 const db = require('./db');
 const Logger = require('./utils/logger');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const { sendEmail } = require('./controllers/emailHelper');
@@ -31,6 +32,8 @@ app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 app.use(rateLimit({
   windowMs: 2 * 60 * 1000,
@@ -45,12 +48,11 @@ app.use(rateLimit({
 
 const staticDir = process.env.NODE_ENV === 'production' ? 'dist' : 'public';
 const frontendDir = path.join(__dirname, '..', 'frontend');
-const portalDist = path.join(frontendDir, 'portal', 'dist')
-
-app.use('/portal', express.static(portalDist))
-app.get('/portal/*splat', (req, res) => {
-  res.sendFile(path.join(portalDist, 'index.html'))
-})
+// const portalDist = path.join(frontendDir, 'portal', 'dist')
+// app.use('/portal', express.static(portalDist))
+// app.get('/portal/*splat', (req, res) => {
+//   res.sendFile(path.join(portalDist, 'index.html'))
+// })
 
 app.use(express.static(path.join(frontendDir, staticDir)));
 

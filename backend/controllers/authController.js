@@ -1,3 +1,5 @@
+'use strict';
+
 const db = require('../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -6,6 +8,33 @@ const Logger = require('../utils/logger');
 const { sendEmail } = require('../controllers/emailHelper');
 
 require('dotenv').config();
+/* ========================
+   Cookie Configuration
+======================== */
+function isProd() {
+  return process.env.NODE_ENV === 'production';
+}
+
+function accessCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: isProd(),
+    sameSite: 'strict',
+    path: '/api', // sent only to API routes
+    maxAge: 15 * 60 * 1000, // should match JWT_EXPIRES_IN (e.g., 15m)
+  };
+}
+
+function refreshCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: isProd(),
+    sameSite: 'strict',
+    path: '/api/auth', // tighter scope
+    maxAge: 8 * 60 * 60 * 1000, // e.g., 8 hours
+  };
+}
+
 
 /**
  * REGISTER
@@ -13,7 +42,7 @@ require('dotenv').config();
 exports.register = async (req, res) => {
   const { username, email, password, role, mobile } = req.body;
 
-  Logger.api('Register API called', { email, mobile, ip: req.ip,requestId: req.requestId });
+  Logger.api('Register API called', { email, mobile, ip: req.ip, requestId: req.requestId });
 
   try {
     // Check existing user
@@ -23,7 +52,7 @@ exports.register = async (req, res) => {
     );
 
     if (existing.length > 0) {
-      Logger.warn('User already exists', { email, mobile, ip: req.ip,requestId: req.requestId });
+      Logger.warn('User already exists', { email, mobile, ip: req.ip, requestId: req.requestId });
       return res.status(409).json({
         message: 'User already exists with same email or mobile'
       });
@@ -38,7 +67,8 @@ exports.register = async (req, res) => {
       [username, email, hashedPassword, role || 'user', mobile, new Date()]
     );
 
-    Logger.info('User registered successfully', {requestId: req.requestId,
+    Logger.info('User registered successfully', {
+      requestId: req.requestId,
       userId: result.insertId,
       role: role || 'user'
     });
@@ -49,7 +79,8 @@ exports.register = async (req, res) => {
     });
 
   } catch (err) {
-    Logger.error('User registration failed', {requestId: req.requestId,
+    Logger.error('User registration failed', {
+      requestId: req.requestId,
       message: err.message,
       stack: err.stack
     });
@@ -92,14 +123,19 @@ exports.login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        role: user.role
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
     );
+
+    // Refresh token (new)
+    const refreshToken = jwt.sign(
+      { id: user.id, type: 'refresh' },
+      process.env.REFRESH_SECRET || process.env.JWT_SECRET,
+      { expiresIn: process.env.REFRESH_EXPIRES_IN || '8h' }
+    );
+    // ✅ Set HTTP-only cookies for the portal
+    res.cookie('authToken', token, accessCookieOptions());
+    res.cookie('refreshToken', refreshToken, refreshCookieOptions());
 
     await db.query(
       'UPDATE users SET last_login = ? WHERE id = ?',
@@ -131,6 +167,138 @@ exports.login = async (req, res) => {
   }
 };
 
+/* ========================
+   REFRESH TOKEN (New)
+======================== */
+
+exports.refresh = async (req, res) => {
+  Logger.api('Refresh token requested', { ip: req.ip, requestId: req.requestId });
+
+  try {
+    const refreshToken = req.cookies?.refreshToken; // cookie-parser enabled
+    if (!refreshToken) {
+      Logger.security('Refresh: no refreshToken cookie', {
+        ip: req.ip,
+        requestId: req.requestId
+      });
+      return res.status(401).json({ message: 'Refresh token missing' });
+    }
+
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.REFRESH_SECRET || process.env.JWT_SECRET
+    );
+
+    if (decoded.type !== 'refresh') {
+      Logger.security('Refresh: invalid refreshToken', {error: err.name, ip: req.ip, requestId: req.requestId });
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+
+    const [rows] = await db.query(
+      'SELECT id, email, role FROM users WHERE id = ? AND is_active = 1',
+      [decoded.id]
+    );
+
+    if (!rows.length) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    const newAccessToken = jwt.sign(
+      { id: rows[0].id, email: rows[0].email, role: rows[0].role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
+    );
+
+    res.cookie('authToken', newAccessToken, accessCookieOptions());
+
+    Logger.info('Token refreshed successfully', {
+      userId: rows[0].id,
+      requestId: req.requestId
+    });
+
+    return res.json({ message: 'Token refreshed', token: newAccessToken });
+
+  } catch (err) {
+    Logger.security('Refresh: invalid refreshToken', {
+      error: err.name,
+      ip: req.ip,
+      requestId: req.requestId
+    });
+    return res.status(401).json({ message: 'Invalid refresh token' });
+  }
+};
+
+/* ========================
+   LOGOUT (New)
+======================== */
+
+exports.logout = async (req, res) => {
+  Logger.api('Logout requested', {
+    userId: req.user?.id,
+    ip: req.ip,
+    requestId: req.requestId
+  });
+
+  try {
+    // ✅ Clear cookies
+    res.clearCookie('authToken', { path: '/api' });
+    res.clearCookie('refreshToken', { path: '/api/auth' });
+
+    Logger.info('User logged out', {
+      userId: req.user?.id,
+      requestId: req.requestId
+    });
+
+    return res.json({ message: 'Logged out successfully' });
+
+  } catch (err) {
+    Logger.error('Logout failed', {
+      message: err.message,
+      stack: err.stack,
+      requestId: req.requestId
+    });
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+/* ========================
+   GET CURRENT USER (New)
+======================== */
+
+exports.me = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const [users] = await db.query(
+      'SELECT id, username, email, mobile, role FROM users WHERE id = ? AND is_active = 1',
+      [req.user.id]
+    );
+
+    if (!users.length) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    Logger.debug('GET /me called', {
+      userId: req.user.id,
+      requestId: req.requestId
+    });
+
+    return res.json(users[0]);
+
+  } catch (err) {
+    Logger.error('GET /me failed', {
+      message: err.message,
+      stack: err.stack,
+      requestId: req.requestId
+    });
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+/* ========================
+   FORGOT & RESET PASSWORD
+======================== */
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
 
@@ -162,7 +330,7 @@ exports.forgotPassword = async (req, res) => {
       [user.id, resetToken, expiresAt]
     );
 
-    Logger.info('Password reset token generated', { userId: user.id, requestId: req.requestId ,ip: req.ip});
+    Logger.info('Password reset token generated', { userId: user.id, requestId: req.requestId, ip: req.ip });
 
     const resetLink = `https://gosrtt.com/reset-password.html?token=${encodeURIComponent(resetToken)}`;
 
@@ -188,7 +356,7 @@ exports.forgotPassword = async (req, res) => {
       text
     );
 
-    Logger.info('Password reset email sent', { userId: user.id, requestId: req.requestId ,ip: req.ip});
+    Logger.info('Password reset email sent', { userId: user.id, requestId: req.requestId, ip: req.ip });
 
     res.json({
       message: 'If the email exists, password reset instructions will be sent over the email',
